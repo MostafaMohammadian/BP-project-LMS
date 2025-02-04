@@ -1,4 +1,5 @@
 import re
+
 class Student:
     def __init__(self, id, name, email, password, phone, enrolled_courses = None, remember_me=False):
         if not self.is_valid_email(email):
@@ -33,11 +34,12 @@ class Student:
         self.enrolled_courses[course_id] = {}
         #print(f"Enrolled in course {course_id}")
     
-    def view_grades(self, course_id):
-        if course_id in self.enrolled_courses:
-            return self.enrolled_courses[course_id]
+    def view_grades(self, course):
+        if course.id in self.enrolled_courses:
+            student_grades = course.enrolled_students[self.id]
+            print(f"Student {self.id} grades are {student_grades}")
         else:
-            print(f"{self.id} is not enrolled in the course {course_id}.")
+            print(f"{self.id} is not enrolled in the course {course.id}.")
             return None
     
    
