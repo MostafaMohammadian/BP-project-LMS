@@ -5,7 +5,7 @@ import json
 import re
 
 class Professor:
-    def __init__(self, id, name, email, password, phone, lms):
+    def __init__(self, id, name, email, password, phone, lms, courses = None, remember_me=False):
         if not self.is_valid_email(email):
             raise ValueError("Invalid email address.")
         
@@ -21,7 +21,10 @@ class Professor:
         self.password = password
         self.phone = phone
         self.lms = lms  # Link to LMS instance
-        self.courses = {}
+        if courses is None:
+            courses = {}  # Ensure it's always a dictionary
+        self.courses = courses
+        self.remember_me = remember_me  # Default is False
     
     def is_valid_email(self, email):
         email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
@@ -43,7 +46,6 @@ class Professor:
 
     def save_data(self, filename="lms_data.json"):
         def serialize(obj):
-            """Helper function to convert objects to serializable dicts."""
             if isinstance(obj, Student):
                 return {
                     "id": obj.id,
@@ -51,19 +53,22 @@ class Professor:
                     "email": obj.email,
                     "password": obj.password,
                     "phone": obj.phone,
-                    "enrolled_courses": obj.enrolled_courses  # Already a dictionary
+                    "enrolled_courses": {course_id: course for course_id, course in obj.enrolled_courses.items()}
                 }
             elif isinstance(obj, Course):
                 return {
                     "id": obj.id,
                     "name": obj.name,
-                    "instructor_id": obj.instructor_id,  # Store only the ID
+                    "instructor_id": obj.instructor_id,
                     "capacity": obj.capacity,
                     "schedule": obj.schedule,
                     "description": obj.description,
-                    "enrolled_students": obj.enrolled_students,  # Dictionary of student IDs and grades
-                    "grading_scheme": obj.grading_scheme,  # Already a dictionary
-                    "students_ids": obj.students_ids  # List of student IDs
+                    "enrolled_students": {
+                        student_id: {category: grade for category, grade in grades.items()}
+                        for student_id, grades in obj.enrolled_students.items()
+                    }, # Store as dict
+                    "grading_scheme": obj.grading_scheme,
+                    "students_ids": obj.students_ids
                 }
             elif isinstance(obj, Professor):
                 return {
@@ -72,9 +77,10 @@ class Professor:
                     "email": obj.email,
                     "password": obj.password,
                     "phone": obj.phone,
-                    "courses": list(obj.courses.keys())  # Store only course IDs
+                    "courses": list(obj.courses.keys()),  # Store course IDs as list
+                    "remember_me": obj.remember_me
                 }
-            return str(obj)  # Convert any other object types to string
+            return str(obj)
 
         data = {
             "students": {id: serialize(student) for id, student in self.lms.students.items()},
@@ -86,18 +92,58 @@ class Professor:
             json.dump(data, f, indent=4)
 
         print(f"Data saved successfully by Professor {self.name}.")
-
-    def load_data(self, filename="lms_data.json"):
-        """Load LMS data from a JSON file (accessed through Professor)."""
+   
+    @classmethod
+    def load_data(cls, lms, filename="lms_data.json"):
         try:
             with open(filename, "r") as f:
                 data = json.load(f)
-            self.lms.students = {id: Student(**info) for id, info in data["students"].items()}
-            self.lms.professors = {id: Professor(**info, lms=self.lms) for id, info in data["professors"].items()}
-            self.lms.courses = {id: Course(**info) for id, info in data["courses"].items()}
-            print(f"Data loaded successfully by Professor {self.name}.")
+
+            # Load students
+            lms.students = {int(id): Student(**info) for id, info in data["students"].items()}
+            
+            # Load courses
+            lms.courses = {}
+            for id, info in data["courses"].items():
+                # Create course without the instructor first
+                course = Course(**info)
+
+                # Assign the instructor manually after the course is created
+                instructor_id = int(info["instructor_id"])  # ensure integer conversion for matching
+                course.instructor = lms.professors.get(instructor_id, None)  # Add instructor object reference
+
+                # Ensure enrolled_students are initialized with grades properly
+                course.enrolled_students = {
+                    int(student_id): grades  # Convert student_id to int
+                    for student_id, grades in info["enrolled_students"].items()
+                }
+
+                lms.courses[int(id)] = course
+
+            # Load professors and assign courses correctly
+            lms.professors = {}
+            for id, info in data["professors"].items():
+                professor = Professor(**info, lms=lms)
+
+                # Restore courses as a dictionary (from list of IDs)
+                professor.courses = {
+                    course_id: lms.courses[course_id]
+                    for course_id in info.get("courses", [])
+                    if course_id in lms.courses
+                }
+
+                lms.professors[int(id)] = professor
+
+            # Check for a remembered professor
+            for professor in lms.professors.values():
+                if professor.remember_me:
+                    return professor  # Auto-login the remembered professor
+
+            return None  # No remembered professor found
+
         except FileNotFoundError:
-            print("No previous data found.")   
+            print("No previous data found.")
+            return None
 
     def plot_student_grades(self, student_id, course):
         if student_id not in course.enrolled_students:
@@ -132,40 +178,35 @@ class Professor:
             return
         course.grading_scheme = scheme
 
-        for student_id, grades in self.enrolled_students.items():
-            final_score = sum(grades.get(category, 0) * (weight / 20) for category, weight in self.grading_scheme.items())
-            self.enrolled_students[student_id]["Final Score"] = final_score  
+        for student_id, grades in course.enrolled_students.items():
+            final_score = sum(grades.get(category, 0) * (weight / 20) for category, weight in course.grading_scheme.items())
+            course.enrolled_students[student_id]["Final Score"] = final_score  
 
-        print("Grading scheme set successfully")
+        print(f"Grading scheme set successfully for course {course.name}")
 
     def assign_grade(self, course_id, student_id, category, grade):
         if course_id not in self.courses:
-            print("You are not the professor of this course.")
+            print(f"{self.name} is not the professor of this course.")
             return
         course = self.courses[course_id]
 
         if not course.grading_scheme:
-            print("Error: Grading scheme has not been set for this course. Cannot assign grades.")
+            print(f"Error: Grading scheme has not been set for {course.name}. Cannot assign grades.")
             return
 
-        if student_id in course.enrolled_students and category in course.enrolled_students[student_id]:
-            # Update the grade for the specified category
+        if student_id in course.enrolled_students:
             course.enrolled_students[student_id][category] = grade
-            print(f"{category}", course.enrolled_students[student_id][category])
-            print(f"Sutdent {student_id}'s, {category} grade updated successfully")
-
-            # course.enrolled_students[student_id]["Final Score"] = self.calculate_final_score(course, student_id)
-            # print(f"Final Score for Student {student_id} updated to: {course.enrolled_students[student_id]['Final Score']}")
-
+            print(f"Grade for {category} updated to {grade} for student {student_id}.")
+            
+            # Calculate final score based on grading scheme
+            final_score = sum(
+                course.enrolled_students[student_id].get(cat, 0) * (weight / 20)
+                for cat, weight in course.grading_scheme.items()
+            )
+            course.enrolled_students[student_id]["Final Score"] = final_score
+            print(f"Updated Final Score for Student {student_id}: {final_score}")
         else:
-            print("Invalid student ID or category")
-    
-    def calculate_final_score(self, course, student_id):
-        final_score = 0
-        for category, weight in course.grading_scheme.items():
-            grade = course.enrolled_students[student_id].get(category, 0)  # Default to 0 if no grade is found
-            final_score += grade * (weight / 20)
-        return final_score
+            print("Invalid student ID or category.")
 
     def export_class_list(self, course_id, file_format="csv"):
         if course_id not in self.courses:
@@ -197,19 +238,22 @@ class Professor:
             return
 
         avg_grade = df["Final Score"].mean()
+        print(df)
         print(f"Current average grade: {avg_grade}")
 
         if avg_grade < 16:
             shift = 16 - avg_grade
-            df["Final Score"] = df["Final Score"] + shift
-            df["Final Score"] = df["Final Score"].apply(lambda x: min(20, max(0, x)))
+            df["Final Score After Shift"] = df["Final Score"] + shift
+            df["Final Score After Shift"] = df["Final Score After Shift"].apply(lambda x: min(20, max(0, x)))
 
             for student_id in df.index:
-                course.enrolled_students[student_id]["Final Score"] = df.loc[student_id, "Final Score"]
+                course.enrolled_students[student_id]["Final Score After Shift"] = df.loc[student_id, "Final Score After Shift"]
 
             print("Grades adjusted to maintain an average of 16.")
-            avg_grade = df["Final Score"].mean()
-            print(f"New average grade: {avg_grade}")
+            avg_grade = df["Final Score After Shift"].mean()
+            print(df)
+            print(f"New adjusted average grade: {avg_grade}")
+            
 
         else:
             print("No adjustment needed, average is already 16 or higher.")
